@@ -15,7 +15,7 @@ echo -e "${YELLOW}════════════════════�
 
 echo -e "${BOLD}📋 快速开始:${RESET}"
 echo -e "${YELLOW}  1. 启动 TyVLLM 服务器:${RESET}"
-echo -e "${CYAN}     nohup tyvllm-server --model /workspace/Qwen3-0.6B --port 8000 > tyvllm.log 2>&1 &${RESET}"
+echo -e "${CYAN}     nohup tyvllm-server --model /workspace/Qwen3-0.6B --port 30000 > tyvllm.log 2>&1 &${RESET}"
 echo ""
 echo -e "${YELLOW}  2. 查看服务日志:${RESET}"
 echo -e "${CYAN}     tail -f tyvllm.log${RESET}"
