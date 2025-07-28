@@ -1,0 +1,7 @@
+5090
+/.idea
+/.vscode
+*DS_Store
+_Mac*
+*.whl
+*.zip

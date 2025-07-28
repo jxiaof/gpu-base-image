@@ -1,0 +1,239 @@
+# 多阶段构建：PyTorch深度学习环境
+ARG CUDA_VERSION=12.8.1
+ARG UBUNTU_VERSION=22.04
+FROM nvcr.m.daocloud.io/nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu${UBUNTU_VERSION} AS builder
+
+# 构建阶段：安装编译依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git \
+    python3-dev python3-pip \
+    wget curl numactl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# 运行阶段
+# FROM nvcr.m.daocloud.io/nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu${UBUNTU_VERSION} AS runtime
+
+# 设置环境变量
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Shanghai \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/usr/local/lib/python3.10/site-packages \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    TERM=xterm-256color \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    HOSTNAME=tenyunn-host \
+    SHELL=/bin/bash \
+    PIP_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple \
+    PIP_TRUSTED_HOST=mirrors.tuna.tsinghua.edu.cn \
+    PATH=/usr/local/cuda/bin:$PATH \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
+    CUDA_HOME=/usr/local/cuda
+
+# 设置hostname
+RUN echo "tenyunn-host" > /etc/hostname
+
+# 安装系统包和安全工具
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # 基础开发工具
+    build-essential cmake git vim nano curl wget rsync lftp \
+    # 系统监控工具
+    htop tree lsof procps bc \
+    # 网络和SSH
+    openssh-server net-tools iputils-ping \
+    # Python开发环境
+    python3-dev python3-pip python3-venv \
+    # 系统包
+    tzdata locales ca-certificates \
+    # GPU监控
+    nvtop \
+    # 安全工具
+    fail2ban unattended-upgrades \
+    # 媒体处理库
+    libglib2.0-0 libsm6 libxext6 libxrender-dev libgl1-mesa-glx \
+    && locale-gen en_US.UTF-8 \
+    # 设置时区
+    && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone \
+    && dpkg-reconfigure -f noninteractive tzdata \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# 升级pip并配置全局pip源
+RUN python3 -m pip install --upgrade pip setuptools wheel && \
+    mkdir -p /etc/pip && \
+    echo '[global]' > /etc/pip/pip.conf && \
+    echo 'index-url = https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple' >> /etc/pip/pip.conf && \
+    echo 'trusted-host = mirrors.tuna.tsinghua.edu.cn' >> /etc/pip/pip.conf && \
+    echo 'timeout = 120' >> /etc/pip/pip.conf && \
+    echo 'retries = 5' >> /etc/pip/pip.conf && \
+    echo 'break-system-packages = true' >> /etc/pip/pip.conf
+
+# 安装PyTorch和深度学习生态
+RUN pip3 install --no-cache-dir \
+    torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+    --extra-index-url https://download.pytorch.org/whl/cu124
+
+
+# 安装Jupyter和开发工具
+RUN pip3 install --no-cache-dir \
+    jupyter==1.0.0 \
+    jupyterlab==4.0.9 \
+    notebook==7.0.6 \
+    ipywidgets==8.1.1 \
+    jupyterlab-git==0.50.0
+
+# 配置Python别名
+RUN echo 'alias python=python3' >> /etc/bash.bashrc && \
+    echo 'alias pip=pip3' >> /etc/bash.bashrc && \
+    ln -sf /usr/bin/python3 /usr/local/bin/python && \
+    ln -sf /usr/bin/pip3 /usr/local/bin/pip
+
+# SSH安全配置
+RUN mkdir /var/run/sshd && \
+    # 基础SSH配置
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    # 安全配置
+    echo 'X11Forwarding no' >> /etc/ssh/sshd_config && \
+    echo 'PrintMotd no' >> /etc/ssh/sshd_config && \
+    echo 'MaxAuthTries 3' >> /etc/ssh/sshd_config && \
+    echo 'ClientAliveInterval 300' >> /etc/ssh/sshd_config && \
+    echo 'ClientAliveCountMax 2' >> /etc/ssh/sshd_config && \
+    echo 'LoginGraceTime 30' >> /etc/ssh/sshd_config && \
+    echo 'MaxSessions 10' >> /etc/ssh/sshd_config && \
+    echo 'Protocol 2' >> /etc/ssh/sshd_config
+
+# 配置fail2ban
+RUN mkdir -p /etc/fail2ban/jail.d && \
+    echo '[sshd]' > /etc/fail2ban/jail.d/sshd.conf && \
+    echo 'enabled = true' >> /etc/fail2ban/jail.d/sshd.conf && \
+    echo 'bantime = 3600' >> /etc/fail2ban/jail.d/sshd.conf && \
+    echo 'findtime = 600' >> /etc/fail2ban/jail.d/sshd.conf && \
+    echo 'maxretry = 3' >> /etc/fail2ban/jail.d/sshd.conf
+
+# 创建目录结构
+RUN mkdir -p /workspace /opt/scripts /root/.jupyter /root/.ssh /var/log/container && \
+    chmod 755 /workspace && \
+    chmod 700 /root/.ssh && \
+    chmod 755 /var/log/container
+
+# 复制脚本文件
+COPY welcome.sh /root/.welcome.sh
+COPY startup.sh /opt/startup.sh
+RUN chmod +x /root/.welcome.sh /opt/startup.sh
+
+# 工作目录设置为datadisk
+WORKDIR /datadisk
+
+# 配置root用户的.bashrc
+RUN echo '' >> /root/.bashrc && \
+    echo '# Welcome message' >> /root/.bashrc && \
+    echo 'if [[ $- == *i* ]] && [[ -n "$PS1" ]]; then' >> /root/.bashrc && \
+    echo '    /root/.welcome.sh' >> /root/.bashrc && \
+    echo 'fi' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# Security aliases' >> /root/.bashrc && \
+    echo 'alias rm="rm -i"' >> /root/.bashrc && \
+    echo 'alias cp="cp -i"' >> /root/.bashrc && \
+    echo 'alias mv="mv -i"' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# CUDA环境配置' >> /root/.bashrc && \
+    echo 'export PATH=/usr/local/cuda/bin:$PATH' >> /root/.bashrc && \
+    echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> /root/.bashrc && \
+    echo 'export CUDA_HOME=/usr/local/cuda' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# Python环境配置' >> /root/.bashrc && \
+    echo 'export PYTHONPATH=/usr/local/lib/python3.10/site-packages:$PYTHONPATH' >> /root/.bashrc && \
+    echo 'export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# Pip配置' >> /root/.bashrc && \
+    echo 'export PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"' >> /root/.bashrc && \
+    echo 'export PIP_TRUSTED_HOST="mirrors.tuna.tsinghua.edu.cn"' >> /root/.bashrc
+
+# 配置root用户的pip源
+RUN mkdir -p /root/.pip && \
+    echo '[global]' > /root/.pip/pip.conf && \
+    echo 'index-url = https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple' >> /root/.pip/pip.conf && \
+    echo 'trusted-host = mirrors.tuna.tsinghua.edu.cn' >> /root/.pip/pip.conf && \
+    echo 'timeout = 120' >> /root/.pip/pip.conf && \
+    echo 'retries = 5' >> /root/.pip/pip.conf && \
+    echo 'break-system-packages = true' >> /root/.pip/pip.conf
+
+# 配置Jupyter安全设置 - 手动创建配置文件避免运行时错误
+RUN mkdir -p /root/.jupyter && \
+    echo "c.ServerApp.ip = '0.0.0.0'" > /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.port = 8888" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.open_browser = False" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.allow_root = True" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.root_dir = '/workspace'" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.token = 'JUPYTER_TOKEN_PLACEHOLDER'" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.disable_check_xsrf = True" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.password = ''" >> /root/.jupyter/jupyter_notebook_config.py
+
+# 设置日志轮转
+RUN echo '/var/log/container/*.log {' > /etc/logrotate.d/container && \
+    echo '    daily' >> /etc/logrotate.d/container && \
+    echo '    missingok' >> /etc/logrotate.d/container && \
+    echo '    rotate 7' >> /etc/logrotate.d/container && \
+    echo '    compress' >> /etc/logrotate.d/container && \
+    echo '    notifempty' >> /etc/logrotate.d/container && \
+    echo '    create 0644 root root' >> /etc/logrotate.d/container && \
+    echo '}' >> /etc/logrotate.d/container
+
+# 验证安装
+RUN echo "========== PyTorch环境验证 ==========" && \
+    python3 -c "import torch; print(f'PyTorch版本: {torch.__version__}'); print(f'CUDA可用: {torch.cuda.is_available()}'); print(f'CUDA版本: {torch.version.cuda}')" && \
+    echo "========== 验证完成 =========="
+
+# 暴露端口
+EXPOSE 22 8888 8080
+
+# 添加安全标签和元数据
+LABEL security.scan="required" \
+      security.root="true" \
+      security.ssh="enabled" \
+      security.fail2ban="enabled" \
+      maintainer="tenyunn.com" \
+      pip.source="mirrors.tuna.tsinghua.edu.cn" \
+      pytorch.version="2.5.1" 
+
+# 健康检查
+# HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+#     CMD pgrep sshd && python3 -c "import torch; torch.cuda.is_available()" || exit 1
+
+# 设置启动命令
+ENTRYPOINT []
+CMD ["/opt/startup.sh"]
+
+
+# docker build -t my_pytorch_image:v12.4 --build-arg CUDA_VERSION=12.4.1 --build-arg UBUNTU_VERSION=22.04 -f Dockerfile.pytorch .
+# docker tag my_pytorch_image:v12.4 default-artifact.tencentcloudcr.com/public/tenyunn/base/pytorch-cuda12.4-ubuntu22.04:v0.0.4
+# docker push default-artifact.tencentcloudcr.com/public/tenyunn/base/pytorch-cuda12.4-ubuntu22.04:v0.0.4
+
+# docker run -d --gpus all -p 2205:22 -p 8000:8888 -e TENYUNN_JUPYTER_TOKEN=324234141234134 -e TENYUNN_SSH_PWD=234432 --name pytorch_container my_pytorch_image:v12.4
+# docker run -d --gpus 1 -p 2206:22 -v /home/data:/workspace --name pytorch_container my_pytorch_image:v12.4
+
+
+# docker run -it --rm --gpus 1 -p 2206:22 -v /home/data:/workspace --name pytorch_container --cpus="8.0" --memory="16g" --memory-swap="32g" my_pytorch_image:v12.4 bash
+
+
+# docker build -t my_pytorch_image:v12.8  -f Dockerfile.pytorch .
+# docker tag my_pytorch_image:v12.8 default-artifact.tencentcloudcr.com/public/tenyunn/base/pytorch-cuda12.8-ubuntu22.04:v0.0.4
+# docker push default-artifact.tencentcloudcr.com/public/tenyunn/base/pytorch-cuda12.8-ubuntu22.04:v0.0.4
+
+
+
+
+
+
+# docker tag my_pytorch_image:v12.8 default-artifact.tencentcloudcr.com/public/tenyunn/base:pytorch-cuda12.8-ubuntu22.04
+# docker push default-artifact.tencentcloudcr.com/public/tenyunn/base:pytorch-cuda12.8-ubuntu22.04
+# docker run -d --gpus all -p 2205:22 --name pytorch_container default-artifact.tencentcloudcr.com/public/tenyunn/base:pytorch-cuda12.8-ubuntu22.04
+
+
+#  http://10.100.0.3:8000/?token=324234141234134

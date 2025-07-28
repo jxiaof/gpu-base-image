@@ -1,0 +1,308 @@
+# 多阶段构建：Miniconda科学计算环境
+# ARG CUDA_VERSION=12.8.1
+# ARG UBUNTU_VERSION=22.04
+# FROM nvcr.m.daocloud.io/nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu${UBUNTU_VERSION} AS runtime
+
+# # 设置环境变量
+# ENV DEBIAN_FRONTEND=noninteractive \
+#     TZ=Asia/Shanghai \
+#     PATH=/opt/conda/bin:/usr/local/cuda/bin:$PATH \
+#     LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
+#     CUDA_HOME=/usr/local/cuda \
+#     NVIDIA_VISIBLE_DEVICES=all \
+#     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+#     TERM=xterm-256color \
+#     LANG=en_US.UTF-8 \
+#     LC_ALL=en_US.UTF-8 \
+#     HOSTNAME=tenyunn-host \
+#     SHELL=/bin/bash \
+#     CONDA_DEFAULT_ENV=base
+
+ARG CUDA_VERSION=12.8.1
+ARG UBUNTU_VERSION=22.04
+FROM nvcr.m.daocloud.io/nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu${UBUNTU_VERSION} AS builder
+
+# 构建阶段：安装编译依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git \
+    python3-dev python3-pip \
+    wget curl numactl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# 运行阶段
+FROM nvcr.m.daocloud.io/nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu${UBUNTU_VERSION} AS runtime
+
+# 设置环境变量
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Shanghai \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/usr/local/lib/python3.10/site-packages \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    TERM=xterm-256color \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    HOSTNAME=tenyunn-host \
+    SHELL=/bin/bash \
+    PIP_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple \
+    PIP_TRUSTED_HOST=mirrors.tuna.tsinghua.edu.cn \
+    PATH=/usr/local/cuda/bin:$PATH \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
+    CUDA_HOME=/usr/local/cuda
+
+# 设置hostname
+RUN echo "tenyunn-host" > /etc/hostname
+
+# # 安装系统包和安全工具
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#     # 基础开发工具
+#     build-essential cmake git vim nano curl wget rsync lftp numactl \
+#     # 系统监控工具
+#     htop tree lsof procps bc \
+#     # 网络和SSH
+#     openssh-server net-tools iputils-ping \
+#     # 系统包
+#     tzdata locales ca-certificates \
+#     # GPU监控
+#     nvtop \
+#     # 安全工具
+#     fail2ban unattended-upgrades \
+#     && locale-gen en_US.UTF-8 \
+#     # 设置时区
+#     && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+#     && echo "Asia/Shanghai" > /etc/timezone \
+#     && dpkg-reconfigure -f noninteractive tzdata \
+#     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 安装系统包和安全工具
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # 基础开发工具
+    build-essential cmake git vim nano curl wget rsync lftp \
+    # 系统监控工具
+    htop tree lsof procps bc \
+    # 网络和SSH
+    openssh-server net-tools iputils-ping \
+    # Python开发环境
+    python3-dev python3-pip python3-venv \
+    # 系统包
+    tzdata locales ca-certificates \
+    # GPU监控
+    nvtop \
+    # 安全工具
+    fail2ban unattended-upgrades \
+    # 媒体处理库
+    libglib2.0-0 libsm6 libxext6 libxrender-dev libgl1-mesa-glx \
+    && locale-gen en_US.UTF-8 \
+    # 设置时区
+    && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone \
+    && dpkg-reconfigure -f noninteractive tzdata \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装Miniconda
+RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    bash /tmp/miniconda.sh -b -p /opt/conda && \
+    rm /tmp/miniconda.sh && \
+    /opt/conda/bin/conda clean -ya
+
+# 配置conda镜像源（使用更稳定的配置方式）
+RUN /opt/conda/bin/conda config --set always_yes yes --set changeps1 true && \
+    /opt/conda/bin/conda config --set show_channel_urls yes && \
+    /opt/conda/bin/conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main && \
+    /opt/conda/bin/conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free && \
+    /opt/conda/bin/conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r && \
+    /opt/conda/bin/conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge && \
+    /opt/conda/bin/conda config --remove channels defaults && \
+    /opt/conda/bin/conda update -q conda --override-channels -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
+
+
+# 安装Jupyter和开发工具
+RUN pip3 install --no-cache-dir \
+    jupyter==1.0.0 \
+    jupyterlab==4.0.9 \
+    notebook==7.0.6 \
+    ipywidgets==8.1.1 \
+    jupyterlab-git==0.50.0
+
+
+    # 创建默认环境并安装核心包
+RUN /opt/conda/bin/conda install -y --override-channels \
+    -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main \
+    -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free \
+    -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r \
+    -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge \
+    python=3.10 \
+    jupyter jupyterlab notebook ipywidgets \
+    sqlite \
+    && /opt/conda/bin/conda clean -ya
+
+
+# # 创建默认环境并安装核心包
+# RUN /opt/conda/bin/conda install -y \
+#     python=3.10 \
+#     jupyter jupyterlab notebook ipywidgets \
+#     sqlite \
+#     && /opt/conda/bin/conda clean -ya
+
+# 配置pip镜像源
+RUN /opt/conda/bin/pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple && \
+    /opt/conda/bin/pip config set global.trusted-host mirrors.tuna.tsinghua.edu.cn && \
+    /opt/conda/bin/pip config set global.timeout 120 && \
+    /opt/conda/bin/pip config set global.retries 5 && \
+    /opt/conda/bin/pip config set global.break-system-packages true
+
+# 安装额外的Python包
+RUN /opt/conda/bin/pip install --no-cache-dir \
+    # 图像处理
+    opencv-python pillow \
+    # Web框架
+    fastapi uvicorn streamlit dash \
+    # AI/ML扩展包
+    huggingface-hub datasets transformers \
+    # 数据处理
+    openpyxl xlrd \
+    # 监控和可视化
+    tensorboard wandb mlflow
+
+# SSH安全配置
+RUN mkdir /var/run/sshd && \
+    # 基础SSH配置
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    # 安全配置
+    echo 'X11Forwarding yes' >> /etc/ssh/sshd_config && \
+    echo 'PrintMotd no' >> /etc/ssh/sshd_config && \
+    echo 'MaxAuthTries 3' >> /etc/ssh/sshd_config && \
+    echo 'ClientAliveInterval 300' >> /etc/ssh/sshd_config && \
+    echo 'ClientAliveCountMax 2' >> /etc/ssh/sshd_config && \
+    echo 'LoginGraceTime 30' >> /etc/ssh/sshd_config && \
+    echo 'MaxSessions 10' >> /etc/ssh/sshd_config && \
+    echo 'Protocol 2' >> /etc/ssh/sshd_config
+
+# 配置fail2ban
+RUN mkdir -p /etc/fail2ban/jail.d && \
+    echo '[sshd]' > /etc/fail2ban/jail.d/sshd.conf && \
+    echo 'enabled = true' >> /etc/fail2ban/jail.d/sshd.conf && \
+    echo 'bantime = 3600' >> /etc/fail2ban/jail.d/sshd.conf && \
+    echo 'findtime = 600' >> /etc/fail2ban/jail.d/sshd.conf && \
+    echo 'maxretry = 3' >> /etc/fail2ban/jail.d/sshd.conf
+
+# 创建目录结构
+RUN mkdir -p /workspace /opt/scripts /root/.jupyter /root/.ssh /var/log/container && \
+    chmod 755 /workspace && \
+    chmod 700 /root/.ssh && \
+    chmod 755 /var/log/container
+
+# 复制脚本文件
+COPY welcome.sh /root/.welcome.sh
+COPY startup.sh /opt/startup.sh
+RUN chmod +x /root/.welcome.sh /opt/startup.sh
+
+# 工作目录设置为datadisk
+WORKDIR /datadisk
+
+# 配置conda初始化和bashrc
+RUN /opt/conda/bin/conda init bash && \
+    echo '' >> /root/.bashrc && \
+    echo '# Conda环境自动激活' >> /root/.bashrc && \
+    echo 'conda activate base' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# Welcome message' >> /root/.bashrc && \
+    echo 'if [[ $- == *i* ]] && [[ -n "$PS1" ]]; then' >> /root/.bashrc && \
+    echo '    /root/.welcome.sh' >> /root/.bashrc && \
+    echo 'fi' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# Security aliases' >> /root/.bashrc && \
+    echo 'alias rm="rm -i"' >> /root/.bashrc && \
+    echo 'alias cp="cp -i"' >> /root/.bashrc && \
+    echo 'alias mv="mv -i"' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# Python别名' >> /root/.bashrc && \
+    echo 'alias python=python3' >> /root/.bashrc && \
+    echo 'alias pip=pip3' >> /root/.bashrc && \
+    echo '# CUDA环境配置' >> /root/.bashrc && \
+    echo 'export PATH=/usr/local/cuda/bin:$PATH' >> /root/.bashrc && \
+    echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> /root/.bashrc && \
+    echo 'export CUDA_HOME=/usr/local/cuda' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc
+
+# 配置全局Python别名
+RUN echo 'alias python=python3' >> /etc/bash.bashrc && \
+    echo 'alias pip=pip3' >> /etc/bash.bashrc && \
+    ln -sf /opt/conda/bin/python /usr/local/bin/python && \
+    ln -sf /opt/conda/bin/pip /usr/local/bin/pip
+
+# 配置Jupyter安全设置 - 手动创建配置文件避免运行时错误
+RUN mkdir -p /root/.jupyter && \
+    echo "c.ServerApp.ip = '0.0.0.0'" > /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.port = 8888" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.open_browser = False" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.allow_root = True" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.root_dir = '/workspace'" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.token = 'JUPYTER_TOKEN_PLACEHOLDER'" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.disable_check_xsrf = True" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.password = ''" >> /root/.jupyter/jupyter_notebook_config.py
+
+# 设置日志轮转
+RUN echo '/var/log/container/*.log {' > /etc/logrotate.d/container && \
+    echo '    daily' >> /etc/logrotate.d/container && \
+    echo '    missingok' >> /etc/logrotate.d/container && \
+    echo '    rotate 7' >> /etc/logrotate.d/container && \
+    echo '    compress' >> /etc/logrotate.d/container && \
+    echo '    notifempty' >> /etc/logrotate.d/container && \
+    echo '    create 0644 root root' >> /etc/logrotate.d/container && \
+    echo '}' >> /etc/logrotate.d/container
+
+# 暴露端口
+EXPOSE 22 8888 8080
+
+# 添加安全标签和元数据
+LABEL security.scan="required" \
+      security.root="true" \
+      security.ssh="enabled" \
+      security.fail2ban="enabled" \
+      maintainer="tenyunn.com" \
+      conda.source="mirrors.tuna.tsinghua.edu.cn" \
+      python.version="3.10" \
+      conda.version="latest"
+
+# 健康检查
+# HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+#     CMD pgrep sshd && /opt/conda/bin/python --version || exit 1
+
+# 设置启动命令
+ENTRYPOINT []
+CMD ["/opt/startup.sh"]
+
+
+# docker build -t my_miniconda_image:v12.4 --build-arg CUDA_VERSION=12.4.1 --build-arg UBUNTU_VERSION=22.04 -f Dockerfile.miniconda .
+# docker tag my_miniconda_image:v12.4 default-artifact.tencentcloudcr.com/public/tenyunn/base/miniconda-cuda12.4-ubuntu22.04:v0.0.4
+# docker push default-artifact.tencentcloudcr.com/public/tenyunn/base/miniconda-cuda12.4-ubuntu22.04:v0.0.4
+
+
+
+# docker build -t my_miniconda_image:v12.8  -f Dockerfile.miniconda .
+# docker tag my_miniconda_image:v12.8 default-artifact.tencentcloudcr.com/public/tenyunn/base/miniconda-cuda12.8-ubuntu22.04:v0.0.4
+# docker push default-artifact.tencentcloudcr.com/public/tenyunn/base/miniconda-cuda12.8-ubuntu22.04:v0.0.4
+
+
+# docker run -d --gpus 1 -p 2205:22 --name miniconda_container default-artifact.tencentcloudcr.com/public/tenyunn/base:miniconda-cuda12.4-ubuntu22.04
+
+# docker run -it -d --gpus 1 -p 2206:22 -p 8001:8888 -e TENYUNN_JUPYTER_TOKEN=324234141234134 -e TENYUNN_SSH_PWD=234432 --name miniconda_container my_miniconda_image:v12.4
+
+# docker run -it -d --gpus 1 -p 2205:22 -v /home/data:/workspace --name miniconda_container --cpus="8.0" --memory="16g" --memory-swap="32g" my_miniconda_image:v12.4 bash
+
+
+# docker run -d --gpus 1 -p 2206:22 -p 8001:8888 -e TENYUNN_JUPYTER_TOKEN=324234141234134 -e TENYUNN_SSH_PWD=234432 --name miniconda_container --cpus="8.0" --memory="16g" --memory-swap="32g" my_miniconda_image:v12.4 bash
+
+
+# docker build -t my_miniconda_image:v12.8 -f Dockerfile.miniconda .
+# docker tag my_miniconda_image:v12.8 default-artifact.tencentcloudcr.com/public/tenyunn/base:miniconda-cuda12.8-ubuntu22.04
+# docker push default-artifact.tencentcloudcr.com/public/tenyunn/base:miniconda-cuda12.8-ubuntu22.04
+# docker run -d --gpus all -p 2205:22 --name miniconda_container default-artifact.tencentcloudcr.com/public/tenyunn/base:miniconda-cuda12.8-ubuntu22.04conda
+
+# http://10.100.0.3:8001/?token=324234141234134

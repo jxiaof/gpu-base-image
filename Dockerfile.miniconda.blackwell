@@ -1,0 +1,201 @@
+# Miniconda环境 - 保持SGLang Blackwell原有Python环境
+FROM docker.m.daocloud.io/lmsysorg/sglang:blackwell AS runtime
+
+# 设置环境变量 - 修正版本 (关键：不要让conda的bin目录优先)
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Shanghai \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    TERM=xterm-256color \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    HOSTNAME=tenyunn-host \
+    SHELL=/bin/bash \
+    PIP_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple \
+    PIP_TRUSTED_HOST=mirrors.tuna.tsinghua.edu.cn \
+    CUDA_HOME=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+
+# 设置hostname
+RUN echo "tenyunn-host" > /etc/hostname
+
+# 安装系统包
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    vim nano curl wget rsync \
+    htop tree lsof procps bc \
+    openssh-server net-tools iputils-ping \
+    tzdata locales ca-certificates \
+    nvtop fail2ban unattended-upgrades \
+    && locale-gen en_US.UTF-8 \
+    && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone \
+    && dpkg-reconfigure -f noninteractive tzdata \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# 保存原有Python环境信息
+RUN ORIGINAL_PYTHON=$(which python3) && \
+    ORIGINAL_PREFIX=$(python3 -c "import sys; print(sys.prefix)") && \
+    echo "原有Python路径: $ORIGINAL_PYTHON" && \
+    echo "原有Python前缀: $ORIGINAL_PREFIX" && \
+    echo "保存原有环境信息..." && \
+    echo "ORIGINAL_PYTHON=$ORIGINAL_PYTHON" > /tmp/python_env.info && \
+    echo "ORIGINAL_PREFIX=$ORIGINAL_PREFIX" >> /tmp/python_env.info
+
+# 安装轻量级conda管理工具
+RUN wget https://gh.llkk.cc/https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh && \
+    bash /tmp/miniforge.sh -b -p /opt/conda && \
+    rm /tmp/miniforge.sh && \
+    /opt/conda/bin/conda clean -ya
+
+# 配置conda但不激活base环境
+RUN /opt/conda/bin/conda config --set always_yes yes --set changeps1 true && \
+    /opt/conda/bin/conda config --set auto_activate_base false && \
+    /opt/conda/bin/conda config --set show_channel_urls yes
+
+# 配置conda镜像源
+RUN /opt/conda/bin/conda config --remove-key channels 2>/dev/null || true && \
+    /opt/conda/bin/conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge && \
+    /opt/conda/bin/conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free && \
+    /opt/conda/bin/conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
+
+# 配置pip源
+RUN mkdir -p /etc/pip && \
+    echo '[global]' > /etc/pip/pip.conf && \
+    echo 'index-url = https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple' >> /etc/pip/pip.conf && \
+    echo 'trusted-host = mirrors.tuna.tsinghua.edu.cn' >> /etc/pip/pip.conf && \
+    echo 'timeout = 120' >> /etc/pip/pip.conf && \
+    echo 'retries = 5' >> /etc/pip/pip.conf && \
+    echo 'break-system-packages = true' >> /etc/pip/pip.conf
+
+# 安装Jupyter (使用原有Python环境)
+RUN python3 -c "import jupyter" 2>/dev/null || pip3 install --no-cache-dir \
+    jupyter==1.0.0 \
+    jupyterlab==4.0.9 \
+    notebook==7.0.6 \
+    ipywidgets==8.1.1 \
+    jupyterlab-git==0.50.0
+
+# SSH安全配置
+RUN mkdir /var/run/sshd && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    echo 'X11Forwarding no' >> /etc/ssh/sshd_config && \
+    echo 'PrintMotd no' >> /etc/ssh/sshd_config && \
+    echo 'MaxAuthTries 3' >> /etc/ssh/sshd_config && \
+    echo 'ClientAliveInterval 300' >> /etc/ssh/sshd_config && \
+    echo 'ClientAliveCountMax 2' >> /etc/ssh/sshd_config && \
+    echo 'LoginGraceTime 30' >> /etc/ssh/sshd_config && \
+    echo 'MaxSessions 10' >> /etc/ssh/sshd_config
+
+# 配置fail2ban
+RUN mkdir -p /etc/fail2ban/jail.d && \
+    echo '[sshd]' > /etc/fail2ban/jail.d/sshd.conf && \
+    echo 'enabled = true' >> /etc/fail2ban/jail.d/sshd.conf && \
+    echo 'bantime = 3600' >> /etc/fail2ban/jail.d/sshd.conf && \
+    echo 'findtime = 600' >> /etc/fail2ban/jail.d/sshd.conf && \
+    echo 'maxretry = 3' >> /etc/fail2ban/jail.d/sshd.conf
+
+# 创建目录结构
+RUN mkdir -p /workspace /opt/scripts /root/.jupyter /root/.ssh /var/log/container && \
+    chmod 755 /workspace && \
+    chmod 700 /root/.ssh && \
+    chmod 755 /var/log/container
+
+# 复制脚本文件
+COPY miniconda_welcome.sh /root/.welcome.sh
+COPY startup.sh /opt/startup.sh
+RUN chmod +x /root/.welcome.sh /opt/startup.sh
+
+# 工作目录
+WORKDIR /datadisk
+
+# 配置bashrc - 关键配置修正版本
+RUN echo '' >> /root/.bashrc && \
+    echo '# === 环境变量设置 (关键) ===' >> /root/.bashrc && \
+    echo '# 确保使用系统原有的Python环境，CUDA路径在前' >> /root/.bashrc && \
+    echo 'export PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' >> /root/.bashrc && \
+    echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> /root/.bashrc && \
+    echo 'export CUDA_HOME=/usr/local/cuda' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# === Conda配置 ===' >> /root/.bashrc && \
+    echo '# 初始化conda但不自动激活' >> /root/.bashrc && \
+    echo '. /opt/conda/etc/profile.d/conda.sh' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# Welcome message' >> /root/.bashrc && \
+    echo 'if [[ $- == *i* ]] && [[ -n "$PS1" ]]; then' >> /root/.bashrc && \
+    echo '    /root/.welcome.sh' >> /root/.bashrc && \
+    echo 'fi' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# Aliases' >> /root/.bashrc && \
+    echo 'alias rm="rm -i"' >> /root/.bashrc && \
+    echo 'alias cp="cp -i"' >> /root/.bashrc && \
+    echo 'alias mv="mv -i"' >> /root/.bashrc && \
+    echo 'alias python=python3' >> /root/.bashrc && \
+    echo 'alias pip=pip3' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# Conda环境管理快捷命令' >> /root/.bashrc && \
+    echo 'alias conda-list="conda env list"' >> /root/.bashrc && \
+    echo 'alias conda-activate="conda activate"' >> /root/.bashrc && \
+    echo 'alias conda-deactivate="conda deactivate"' >> /root/.bashrc && \
+    echo 'alias env-info="python3 -c \"import sys; print(sys.executable); print(sys.path[0])\""' >> /root/.bashrc
+
+# 配置全局别名
+RUN echo 'alias python=python3' >> /etc/bash.bashrc && \
+    echo 'alias pip=pip3' >> /etc/bash.bashrc
+
+# 配置Jupyter
+RUN mkdir -p /root/.jupyter && \
+    echo "c.ServerApp.ip = '0.0.0.0'" > /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.port = 8888" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.open_browser = False" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.allow_root = True" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.root_dir = '/workspace'" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.token = 'JUPYTER_TOKEN_PLACEHOLDER'" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.disable_check_xsrf = True" >> /root/.jupyter/jupyter_notebook_config.py && \
+    echo "c.ServerApp.password = ''" >> /root/.jupyter/jupyter_notebook_config.py
+
+# 设置日志轮转
+RUN echo '/var/log/container/*.log {' > /etc/logrotate.d/container && \
+    echo '    daily' >> /etc/logrotate.d/container && \
+    echo '    missingok' >> /etc/logrotate.d/container && \
+    echo '    rotate 7' >> /etc/logrotate.d/container && \
+    echo '    compress' >> /etc/logrotate.d/container && \
+    echo '    notifempty' >> /etc/logrotate.d/container && \
+    echo '    create 0644 root root' >> /etc/logrotate.d/container && \
+    echo '}' >> /etc/logrotate.d/container
+
+# 验证环境 (使用正确的PATH顺序) - 修正版本
+RUN echo "========== Miniconda环境验证 ==========" && \
+    export PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && \
+    echo "当前PATH: $PATH" && \
+    echo "Python路径: $(which python3)" && \
+    python3 -c "import torch; print(f'PyTorch版本: {torch.__version__}'); print(f'CUDA可用: {torch.cuda.is_available()}'); print(f'Python路径: {torch.__file__}')" && \
+    echo "Conda工具可用性:" && \
+    /opt/conda/bin/conda --version && \
+    echo "Conda环境列表:" && \
+    /opt/conda/bin/conda info --envs && \
+    echo "========== 验证完成 =========="
+
+# 暴露端口
+EXPOSE 22 8888 8080
+
+# 元数据
+LABEL maintainer="tenyunn.com" \
+      version="miniconda-sglang-blackwell" \
+      description="Miniconda tools with original SGLang Python environment"
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD pgrep sshd > /dev/null && python3 -c "import torch; assert torch.cuda.is_available()" || exit 1
+
+# 启动命令
+CMD ["/opt/startup.sh"]
+
+# docker build -t my_miniconda_image_blackwell:v12.8 -f Dockerfile.miniconda.blackwell .
+# docker tag my_miniconda_image_blackwell:v12.8 default-artifact.tencentcloudcr.com/public/tenyunn/base/miniconda-cuda12.8-ubuntu22.04:blackwell
+# docker push default-artifact.tencentcloudcr.com/public/tenyunn/base/miniconda-cuda12.8-ubuntu22.04:blackwell
