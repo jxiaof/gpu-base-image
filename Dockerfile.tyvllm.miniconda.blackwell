@@ -1,0 +1,95 @@
+# TyVLLM Miniconda环境 - 基于优化的Miniconda镜像
+FROM default-artifact.tencentcloudcr.com/public/tenyunn/base/miniconda-cuda12.8-ubuntu22.04:blackwell
+
+# 设置工作目录
+WORKDIR /datadisk
+
+# 设置环境变量 - 继承基础镜像的正确PATH设置
+ENV PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH} \
+    CUDA_HOME=/usr/local/cuda
+
+# 创建workspace目录
+RUN mkdir -p /workspace
+
+# 安装git-lfs
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git-lfs ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# 下载模型和代码
+RUN cd /workspace && \
+    echo "正在下载Qwen3-0.6B模型..." && \
+    git lfs clone https://www.modelscope.cn/models/Qwen/Qwen3-0.6B.git && \
+    echo "模型下载完成"
+
+# 复制安装文件
+COPY flash_attn-2.8.0.post2+cu12torch2.7cxx11abiTRUE-cp310-cp310-linux_x86_64.whl /tmp/
+COPY ty-vllm-main/dist/tyvllm-0.1.0-py3-none-any.whl /tmp/
+COPY ty-vllm-doc/ /workspace/ty-vllm-doc/
+
+# 确保使用原有Python环境安装 - 使用正确的PATH
+RUN export PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && \
+    echo "使用原有Python环境安装包..." && \
+    echo "当前PATH: $PATH" && \
+    python3 -c "import sys; print(f'使用Python: {sys.executable}')" && \
+    pip install /tmp/flash_attn-2.8.0.post2+cu12torch2.7cxx11abiTRUE-cp310-cp310-linux_x86_64.whl && \
+    pip install /tmp/tyvllm-0.1.0-py3-none-any.whl
+
+# 清理文件
+RUN rm -rf /tmp/flash_attn*.whl /tmp/tyvllm-*.whl && \
+    rm -rf /workspace/ty-vllm-doc/.git* && \
+    rm -rf /workspace/Qwen3-0.6B/.git && \
+    echo "Qwen3-0.6B模型已就绪 (Miniconda版)" > /workspace/model_info.txt && \
+    echo "模型路径: /workspace/Qwen3-0.6B" >> /workspace/model_info.txt && \
+    echo "文档路径: /workspace/ty-vllm-doc" >> /workspace/model_info.txt
+
+# 验证安装 - 使用正确的PATH
+RUN echo "========== TyVLLM Miniconda环境验证 ==========" && \
+    export PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && \
+    echo "当前PATH: $PATH" && \
+    echo "Python路径: $(which python3)" && \
+    python3 -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}'); print(f'Python路径: {torch.__file__}')" && \
+    python3 -c "import flash_attn; print(f'Flash Attention: {flash_attn.__version__}')" && \
+    python3 -c "import tyvllm; print(f'TyVLLM: {tyvllm.__version__}')" && \
+    /opt/conda/bin/conda info --envs && \
+    echo "========== 验证完成 =========="
+
+# 添加TyVLLM专用欢迎脚本和环境变量设置
+COPY miniconda_welcome.sh /opt/tyvllm_welcome.sh
+RUN chmod +x /opt/tyvllm_welcome.sh && \
+    echo '' >> /root/.bashrc && \
+    echo '# === TyVLLM环境变量确保 ===' >> /root/.bashrc && \
+    echo 'export PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' >> /root/.bashrc && \
+    echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> /root/.bashrc && \
+    echo 'export CUDA_HOME=/usr/local/cuda' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# TyVLLM Miniconda环境信息' >> /root/.bashrc && \
+    echo 'if [[ $- == *i* ]] && [[ -n "$PS1" ]]; then' >> /root/.bashrc && \
+    echo '    /opt/tyvllm_welcome.sh' >> /root/.bashrc && \
+    echo 'fi' >> /root/.bashrc && \
+    echo '' >> /root/.bashrc && \
+    echo '# TyVLLM快捷命令' >> /root/.bashrc && \
+    echo 'alias start-tyvllm="cd /workspace && nohup tyvllm-server --model /workspace/Qwen3-0.6B --port 8000 > tyvllm.log 2>&1 &"' >> /root/.bashrc && \
+    echo 'alias check-tyvllm="pgrep -f tyvllm-server"' >> /root/.bashrc && \
+    echo 'alias logs-tyvllm="tail -f /workspace/tyvllm.log"' >> /root/.bashrc
+
+# 元数据
+LABEL maintainer="tenyunn.com" \
+      version="tyvllm-miniconda-blackwell" \
+      description="TyVLLM with Miniconda on Blackwell" \
+      model="Qwen3-0.6B"
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD pgrep sshd > /dev/null && python3 -c "import torch, tyvllm; assert torch.cuda.is_available()" || exit 1
+
+# 暴露端口
+EXPOSE 22 8888 8080 8000
+
+# 使用基础镜像的启动脚本
+CMD ["/opt/startup.sh"]
+
+# docker build -t my_tyvllm_miniconda_image_blackwell:v12.8 -f Dockerfile.tyvllm.miniconda.blackwell .
+# docker tag my_tyvllm_miniconda_image_blackwell:v12.8 default-artifact.tencentcloudcr.com/public/tenyunn/base/tyvllm-miniconda-cuda12.8-ubuntu22.04:blackwell
+# docker push default-artifact.tencentcloudcr.com/public/tenyunn/base/tyvllm-miniconda-cuda12.8-ubuntu22.04:blackwell
